@@ -1,0 +1,20 @@
+[package]
+name = "sigbot"
+version = "0.1.0"
+edition = "2021"
+authors = [ "Kaspar Schleiser <kaspar@schleiser.de>" ]
+
+[dependencies]
+anyhow = "1.0.70"
+camino = "1.1.4"
+env_logger = "0.10.0"
+futures = "0.3.28"
+log = "0.4.17"
+presage = { git = "https://github.com/whisperfish/presage" }
+presage-store-sled = { git = "https://github.com/whisperfish/presage" }
+qr2term = "0.3.1"
+shellexpand = "3.1.0"
+tokio = { version = "1.27.0", features = ["rt-multi-thread"] }
+
+[patch.crates-io]
+"curve25519-dalek" = { git = "https://github.com/signalapp/curve25519-dalek", branch = "lizard2" }
