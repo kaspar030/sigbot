@@ -1,20 +1,30 @@
 use anyhow::Context;
 use camino::Utf8PathBuf;
 use presage::{
-    prelude::{Content, ContentBody, DataMessage, SignalServers, Uuid},
-    Manager, Registered,
+    prelude::{Contact, Content, ContentBody, DataMessage, SignalServers, Uuid},
+    Manager, Registered, Thread,
 };
 use presage_store_sled::{MigrationConflictStrategy, SledStore};
 
-use futures::{channel::oneshot, future, future::BoxFuture, pin_mut, StreamExt};
+use async_trait::async_trait;
+
+use futures::{channel::oneshot, future, pin_mut, StreamExt};
 use log::{debug, error, info};
-use std::{future::Future, pin::Pin, time::UNIX_EPOCH};
+use std::time::UNIX_EPOCH;
+
+use std::sync::{Arc, Mutex};
+
+#[async_trait(?Send)]
+pub trait SignalMsgHandler {
+    async fn handle(&mut self, signal: &Signal, content: &Content);
+}
 
 pub struct Signal {
     device_name: String,
     db_path: Utf8PathBuf,
     servers: SignalServers,
     manager: Option<Manager<SledStore, Registered>>,
+    handlers: Vec<Arc<Mutex<Box<dyn SignalMsgHandler>>>>,
 }
 
 impl Signal {
@@ -30,6 +40,7 @@ impl Signal {
             db_path,
             servers: SignalServers::Production,
             manager: None,
+            handlers: Vec::new(),
         })
     }
 
@@ -77,19 +88,24 @@ impl Signal {
         Ok(())
     }
 
-    pub async fn register_handler<F, S>(&self, handler: F, state: S) -> anyhow::Result<()>
-    where
-        F: Fn(&Manager<SledStore, Registered>, &Content, &S),
-    {
+    pub fn register_handler(&mut self, handler: Box<dyn SignalMsgHandler>) {
+        self.handlers.push(Arc::new(Mutex::new(handler)));
+    }
+
+    pub async fn process_messages(&mut self) -> anyhow::Result<()> {
         let mut manager = self.manager.as_ref().unwrap().clone();
         let messages = manager
             .receive_messages()
             .await
             .context("failed to initialize messages stream")?;
+
         pin_mut!(messages);
 
         while let Some(content) = messages.next().await {
-            handler(&manager, &content, &state);
+            for handler in self.handlers.iter() {
+                let mut handler = handler.lock().unwrap();
+                handler.handle(self, &content).await;
+            }
         }
 
         Ok(())
@@ -112,5 +128,21 @@ impl Signal {
         m.send_message(*uuid, message, timestamp).await?;
 
         Ok(())
+    }
+
+    pub async fn reply(&self, thread: &Thread, msg: &str) -> anyhow::Result<()> {
+        match thread {
+            Thread::Contact(uuid) => {
+                self.send(msg, uuid).await?;
+            }
+            Thread::Group(_bytes) => {
+                debug!("reply to group not implemented");
+            }
+        }
+        Ok(())
+    }
+
+    pub fn manager(&self) -> &Manager<SledStore, Registered> {
+        self.manager.as_ref().unwrap()
     }
 }
