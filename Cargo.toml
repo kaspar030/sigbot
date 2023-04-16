@@ -8,14 +8,17 @@ authors = [ "Kaspar Schleiser <kaspar@schleiser.de>" ]
 anyhow = "1.0.70"
 async-trait = "0.1.68"
 camino = "1.1.4"
+dasp = { version = "0.11.0", features = ["signal", "ring_buffer", "interpolate-sinc", "interpolate"] }
 env_logger = "0.10.0"
 futures = "0.3.28"
 log = "0.4.17"
 presage = { git = "https://github.com/whisperfish/presage" }
 presage-store-sled = { git = "https://github.com/whisperfish/presage" }
 qr2term = "0.3.1"
+redlux = "0.6.0"
 shellexpand = "3.1.0"
 tokio = { version = "1.27.0", features = ["rt-multi-thread"] }
+whisper-rs = "0.5.0"
 
 [patch.crates-io]
 "curve25519-dalek" = { git = "https://github.com/signalapp/curve25519-dalek", branch = "lizard2" }
