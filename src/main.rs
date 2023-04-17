@@ -275,7 +275,7 @@ async fn main() -> anyhow::Result<()> {
     let signal = SignalConfig::new("tester")?
         //        .register_handler(Box::new(DebugHandler {}))
         .register_handler(Box::new(Bot::new()))
-        .run()?;
+        .run(signal::timestamp())?;
 
     signal.run().await?;
 

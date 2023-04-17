@@ -207,7 +207,7 @@ impl SignalConfig {
         self
     }
 
-    pub fn run(self) -> anyhow::Result<Signal> {
+    pub fn run(self, replay_timestamp: u64) -> anyhow::Result<Signal> {
         debug!("opening config database from {}", self.db_path);
         let config_store = SledStore::open_with_passphrase(
             &self.db_path,
@@ -231,6 +231,7 @@ impl SignalConfig {
             local.spawn_local(SignalConfig::incoming_signal_task(
                 incoming_manager,
                 in_chan_tx,
+                replay_timestamp,
             ));
             local.spawn_local(SignalConfig::outgoing_signal_task(
                 outgoing_manager,
@@ -251,6 +252,7 @@ impl SignalConfig {
     async fn incoming_signal_task(
         mut manager: Manager<SledStore, Registered>,
         in_chan_tx: flume::Sender<SignalMsg>,
+        replay_timestamp: u64,
     ) {
         debug!("launching incoming signal message task");
         //        let mut manager = self.manager.unwrap();
@@ -263,6 +265,10 @@ impl SignalConfig {
         pin_mut!(messages);
 
         while let Some(content) = messages.next().await {
+            if content.metadata.timestamp < replay_timestamp {
+                continue;
+            }
+
             debug!("incoming signal message task: msg received");
             in_chan_tx.send_async(SignalMsg::Received(content)).await;
         }
@@ -337,7 +343,7 @@ impl Signal {
     }
 }
 
-fn timestamp() -> u64 {
+pub fn timestamp() -> u64 {
     let timestamp = std::time::SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("Time went backwards")
