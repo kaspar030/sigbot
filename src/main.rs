@@ -1,37 +1,28 @@
-use std::{
-    collections::HashMap,
-    sync::{Arc, Mutex},
-};
+use std::collections::HashMap;
 
 use anyhow::anyhow;
-use env_logger::Env;
-
-mod signal;
 use async_trait::async_trait;
+use env_logger::Env;
 use log::debug;
 use presage::{
     prelude::{proto::AttachmentPointer, Content},
     Manager, Registered, Thread,
 };
-use signal::{Signal, SignalMsgHandler};
+
+use std::sync::Arc;
+use tokio::sync::Mutex;
+
+mod signal;
+use signal::{SignalConfig, SignalHandle, SignalMsgHandler};
 
 mod resample;
 
 struct DebugHandler {}
 
-#[async_trait(?Send)]
+#[async_trait]
 impl SignalMsgHandler for DebugHandler {
-    async fn handle(&mut self, _signal: &Signal, _content: &Content) {
-        debug!("handling message");
-    }
-}
-
-struct PrintMsgHandler {}
-#[async_trait(?Send)]
-impl SignalMsgHandler for PrintMsgHandler {
-    async fn handle(&mut self, signal: &Signal, content: &Content) {
-        let manager = signal.manager();
-        print_message(manager, content);
+    async fn handle(&self, content: &Content, signal: &mut SignalHandle) {
+        debug!("DebugHandler: {:#?}", content);
     }
 }
 
@@ -42,34 +33,36 @@ struct BotThreadState {
 
 struct BotState {
     threads: HashMap<Thread, BotThreadState>,
+    whisper_sema: tokio::sync::Semaphore,
 }
 
 impl BotState {
     pub fn new() -> Self {
         Self {
             threads: HashMap::new(),
+            whisper_sema: tokio::sync::Semaphore::new(1),
         }
     }
 }
 
 struct Bot {
-    state: BotState,
+    state: Arc<Mutex<BotState>>,
 }
 
 impl Bot {
     pub fn new() -> Self {
         Bot {
-            state: BotState::new(),
+            state: Arc::new(Mutex::new(BotState::new())),
         }
     }
 
     async fn process_audio_attachment(
-        &mut self,
-        signal: &Signal,
+        &self,
+        signal: &SignalHandle,
         attachment_pointer: &AttachmentPointer,
     ) -> anyhow::Result<String> {
         use redlux::Decoder;
-        let Ok(attachment_data) = signal.manager().get_attachment(attachment_pointer).await else {
+        let Ok(attachment_data) = signal.get_attachment(attachment_pointer).await else {
                 log::warn!("failed to fetch attachment");
                 return Err(anyhow!("failed to fetch attachment"));
             };
@@ -79,51 +72,80 @@ impl Bot {
             attachment_data.len()
         );
 
-        let decoder = Decoder::new_aac(std::io::Cursor::new(attachment_data));
+        // limit calls to whisper-rs
+        // let _sema = {
+        //     let state = self.state.lock().await;
+        //     state.whisper_sema.acquire().await.unwrap()
+        // };
 
-        //        let decoded: Vec<f32> = decoder.map(|sample| sample as f32 / 32768.0).collect();
-        let decoded: Vec<i16> = decoder.collect();
+        let (tx, rx) = flume::unbounded();
 
-        use whisper_rs::*;
+        std::thread::spawn(move || {
+            let decoder = Decoder::new_aac(std::io::Cursor::new(attachment_data));
 
-        let decoded = resample::resample(&decoded[..], 16000);
-        debug!("number of samples {}", decoded.len());
+            //        let decoded: Vec<f32> = decoder.map(|sample| sample as f32 / 32768.0).collect();
+            let decoded: Vec<i16> = decoder.collect();
 
-        debug!("loading model...");
-        let mut ctx = WhisperContext::new("models/ggml-medium.bin").expect("opening model file");
-        debug!("loading model done");
-        let params = FullParams::new(SamplingStrategy::default());
-        ctx.full(params, &decoded[..]).expect("failed to run model");
-        // fetch the results
-        let num_segments = ctx.full_n_segments();
-        let mut out = Vec::new();
-        for i in 0..num_segments {
-            let segment = ctx.full_get_segment_text(i).expect("failed to get segment");
-            let start_timestamp = ctx.full_get_segment_t0(i);
-            let end_timestamp = ctx.full_get_segment_t1(i);
-            debug!("[{} - {}]: {}", start_timestamp, end_timestamp, segment);
-            out.push(segment);
-        }
-        Ok(out.join("\n"))
+            use whisper_rs::*;
+
+            let decoded = resample::resample(&decoded[..], 16000);
+            debug!("number of samples {}", decoded.len());
+
+            debug!("loading model...");
+            let mut ctx =
+                WhisperContext::new("models/ggml-medium.bin").expect("opening model file");
+            debug!("loading model done, starting inference");
+            let mut params = FullParams::new(SamplingStrategy::default());
+            params.set_translate(true);
+
+            ctx.full(params, &decoded[..]).expect("failed to run model");
+            // fetch the results
+            let num_segments = ctx.full_n_segments();
+            if num_segments == 0 {
+                tx.send(Err(anyhow!("no whisper segments"))).unwrap();
+            } else {
+                let mut out = Vec::new();
+                for i in 0..num_segments {
+                    let segment = ctx.full_get_segment_text(i).expect("failed to get segment");
+                    let start_timestamp = ctx.full_get_segment_t0(i);
+                    let end_timestamp = ctx.full_get_segment_t1(i);
+                    debug!("[{} - {}]: {}", start_timestamp, end_timestamp, segment);
+                    out.push(segment);
+                }
+                debug!("inference done");
+                tx.send(Ok(out.join("\n"))).unwrap();
+            }
+        });
+
+        rx.recv_async().await.unwrap()
     }
 
     async fn handle_attachments(
-        &mut self,
-        signal: &Signal,
-        thread: Thread,
+        &self,
+        signal: &SignalHandle,
+        content: &Content,
         attachments: &Vec<AttachmentPointer>,
     ) -> anyhow::Result<()> {
         debug!("Sigbot: datamessage, attachments:{}", attachments.len());
+        let thread = Thread::try_from(content).unwrap();
+
         for attachment in attachments {
             match attachment.content_type() {
                 "audio/aac" => {
                     debug!("Content-type: audio/aac");
+                    signal.react(content, "🦻").await?;
                     let res = self.process_audio_attachment(signal, attachment).await;
+                    debug!("audio attachment processed");
 
                     match res {
-                        Ok(string) => signal.reply(&thread, &string).await?,
+                        Ok(string) => {
+                            signal
+                                .quote(content, &format!("TRANSCRIPT:\n{string}"))
+                                .await?
+                        }
                         Err(err) => debug!("{}", err),
                     }
+                    debug!("replied");
                 }
                 _ => debug!("unhandled content type {}", attachment.content_type()),
             }
@@ -132,9 +154,9 @@ impl Bot {
     }
 }
 
-#[async_trait(?Send)]
+#[async_trait]
 impl SignalMsgHandler for Bot {
-    async fn handle(&mut self, signal: &Signal, content: &Content) {
+    async fn handle(&self, content: &Content, signal: &mut SignalHandle) {
         use presage::libsignal_service::proto::sync_message::Sent;
         use presage::prelude::{ContentBody, DataMessage, SyncMessage};
         use presage::Thread;
@@ -144,15 +166,33 @@ impl SignalMsgHandler for Bot {
             return;
         };
 
-        let thread_state = self.state.threads.entry(thread.clone()).or_default();
-        debug!("Sigbot: {:?} {:?}", &thread, thread_state);
+        async fn thread_get_state(state: &Arc<Mutex<BotState>>, thread: &Thread) -> bool {
+            let mut state = state.lock().await;
+            state.threads.entry(thread.clone()).or_default().enabled
+        }
+
+        async fn thread_set_state(state: &Arc<Mutex<BotState>>, thread: &Thread, enabled: bool) {
+            let mut state = state.lock().await;
+            state.threads.entry(thread.clone()).or_default().enabled = enabled;
+        }
+
+        let thread_enabled = thread_get_state(&self.state, &thread).await;
+
+        debug!(
+            "Sigbot: {:?} {:?}",
+            &thread,
+            thread_get_state(&self.state, &thread).await
+        );
+
         match &content.body {
             ContentBody::SynchronizeMessage(SyncMessage {
                 sent:
                     Some(Sent {
                         message:
                             Some(DataMessage {
-                                body: Some(body), ..
+                                body: Some(body),
+                                quote,
+                                ..
                             }),
                         ..
                     }),
@@ -163,29 +203,30 @@ impl SignalMsgHandler for Bot {
                 match body.as_str() {
                     "/bot ping" => {
                         debug!("ping");
-                        signal.reply(&thread, "pong").await.unwrap();
+                        signal.quote(&content, "pong").await.unwrap();
                     }
                     "/bot enable" => {
                         debug!("enable");
-                        if thread_state.enabled {
-                            signal.reply(&thread, "bot already enabled").await.unwrap();
-                        } else {
-                            thread_state.enabled = true;
-                            signal.reply(&thread, "bot enabled").await.unwrap();
+                        signal.react(content, "👍").await.unwrap();
+                        if !thread_enabled {
+                            thread_set_state(&self.state, &thread, true).await;
                         }
                     }
                     "/bot disable" => {
                         debug!("disable");
-                        if thread_state.enabled {
-                            thread_state.enabled = false;
-
-                            signal.reply(&thread, "bot disabled").await.unwrap();
+                        signal.react(content, "👍").await.unwrap();
+                        if thread_enabled {
+                            thread_set_state(&self.state, &thread, false).await;
                         }
                     }
                     _ => {
                         handled = false;
                     }
                 };
+
+                // if let Some(quote) = quote {
+                //     debug!("quote: {:#?}", quote);
+                // }
 
                 if handled {
                     return;
@@ -204,7 +245,7 @@ impl SignalMsgHandler for Bot {
                     }),
                 ..
             }) => {
-                self.handle_attachments(signal, thread, attachments)
+                self.handle_attachments(signal, content, attachments)
                     .await
                     .unwrap();
             }
@@ -213,7 +254,7 @@ impl SignalMsgHandler for Bot {
                 attachments,
                 ..
             }) => {
-                self.handle_attachments(signal, thread, attachments)
+                self.handle_attachments(signal, content, attachments)
                     .await
                     .unwrap();
             }
@@ -224,152 +265,19 @@ impl SignalMsgHandler for Bot {
     }
 }
 
-#[tokio::main]
-async fn main() {
-    env_logger::from_env(
+#[tokio::main(flavor = "multi_thread")]
+async fn main() -> anyhow::Result<()> {
+    env_logger::Builder::from_env(
         Env::default().default_filter_or(format!("{}=warn", env!("CARGO_PKG_NAME"))),
     )
     .init();
 
-    let mut signal = Signal::new("tester").unwrap();
-    //signal.link().await.unwrap();
-    signal.open().await.unwrap();
+    let signal = SignalConfig::new("tester")?
+        //        .register_handler(Box::new(DebugHandler {}))
+        .register_handler(Box::new(Bot::new()))
+        .run()?;
 
-    //    let state = Arc::new(Mutex::new(BotState::new()));
-    signal.register_handler(Box::new(PrintMsgHandler {}));
-    signal.register_handler(Box::new(Bot::new()));
+    signal.run().await?;
 
-    signal.process_messages().await.unwrap();
-}
-
-fn print_message<C: presage::Store>(manager: &Manager<C, Registered>, content: &Content) {
-    use presage::libsignal_service::content::Reaction;
-    use presage::libsignal_service::proto::data_message::Quote;
-    use presage::libsignal_service::proto::sync_message::Sent;
-    use presage::prelude::{ContentBody, DataMessage, SyncMessage};
-    use presage::Thread;
-
-    let Ok(thread) = Thread::try_from(content) else {
-        log::warn!("failed to derive thread from content");
-        return;
-    };
-
-    let format_data_message = |thread: &Thread, data_message: &DataMessage| match data_message {
-        DataMessage {
-            quote:
-                Some(Quote {
-                    text: Some(quoted_text),
-                    ..
-                }),
-            body: Some(body),
-            ..
-        } => Some(format!("Answer to message \"{quoted_text}\": {body}")),
-        DataMessage {
-            reaction:
-                Some(Reaction {
-                    target_sent_timestamp: Some(timestamp),
-                    emoji: Some(emoji),
-                    ..
-                }),
-            ..
-        } => {
-            let Ok(Some(message)) = manager.message(thread, *timestamp) else {
-                log::warn!("no message in {thread} sent at {timestamp}");
-                return None;
-            };
-
-            let ContentBody::DataMessage(DataMessage { body: Some(body), .. }) = message.body else {
-                log::warn!("message reacted to has no body");
-                return None;
-            };
-
-            Some(format!("Reacted with {emoji} to message: \"{body}\""))
-        }
-        DataMessage {
-            body: Some(body), ..
-        } => Some(body.to_string()),
-        _ => Some("Empty data message".to_string()),
-    };
-
-    let format_contact = |uuid| {
-        manager
-            .contact_by_id(uuid)
-            .ok()
-            .flatten()
-            .filter(|c| !c.name.is_empty())
-            .map(|c| c.name)
-            .unwrap_or_else(|| uuid.to_string())
-    };
-
-    let format_group = |key| {
-        manager
-            .group(key)
-            .ok()
-            .flatten()
-            .map(|g| g.title)
-            .unwrap_or_else(|| "<missing group>".to_string())
-    };
-
-    enum Msg<'a> {
-        Received(&'a Thread, String),
-        Sent(&'a Thread, String),
-    }
-
-    if let Some(msg) = match &content.body {
-        ContentBody::NullMessage(_) => Some(Msg::Received(
-            &thread,
-            "Null message (for example deleted)".to_string(),
-        )),
-        ContentBody::DataMessage(data_message) => {
-            format_data_message(&thread, data_message).map(|body| Msg::Received(&thread, body))
-        }
-        ContentBody::SynchronizeMessage(SyncMessage {
-            sent:
-                Some(Sent {
-                    message: Some(data_message),
-                    ..
-                }),
-            ..
-        }) => format_data_message(&thread, data_message).map(|body| Msg::Sent(&thread, body)),
-        ContentBody::CallMessage(_) => Some(Msg::Received(&thread, "is calling!".into())),
-        ContentBody::TypingMessage(_) => Some(Msg::Received(&thread, "is typing...".into())),
-        c => {
-            log::warn!("unsupported message {c:?}");
-            None
-        }
-    } {
-        let ts = content.metadata.timestamp;
-        let (prefix, body) = match msg {
-            Msg::Received(Thread::Contact(sender), body) => {
-                let contact = format_contact(sender);
-                (format!("From {contact} @ {ts}: "), body)
-            }
-            Msg::Sent(Thread::Contact(recipient), body) => {
-                let contact = format_contact(recipient);
-                (format!("To {contact} @ {ts}"), body)
-            }
-            Msg::Received(Thread::Group(key), body) => {
-                let sender = content.metadata.sender.uuid;
-                let group = format_group(key);
-                (format!("From {sender} to group {group} @ {ts}: "), body)
-            }
-            Msg::Sent(Thread::Group(key), body) => {
-                let group = format_group(key);
-                (format!("To group {group} @ {ts}"), body)
-            }
-        };
-
-        println!("{prefix} / {body}");
-
-        // if notifications {
-        //     if let Err(e) = Notification::new()
-        //         .summary(&prefix)
-        //         .body(&body)
-        //         .icon("presage")
-        //         .show()
-        //     {
-        //         log::error!("failed to display desktop notification: {e}");
-        //     }
-        // }
-    }
+    Ok(())
 }
