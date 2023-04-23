@@ -5,7 +5,7 @@ use anyhow::{anyhow, Context};
 use async_trait::async_trait;
 use camino::Utf8PathBuf;
 use futures::{pin_mut, StreamExt};
-use log::debug;
+use log::{debug, warn};
 use presage::prelude::content::Reaction;
 use presage::prelude::proto::data_message::Quote;
 use presage::prelude::proto::AttachmentPointer;
@@ -24,7 +24,7 @@ pub enum SignalMsg {
     Received(Content),
     Send(Uuid, ContentBody),
     ManagerRequest(ManagerRequest, flume::Sender<ManagerReply>),
-    ManagerReply(ManagerReply),
+    //    ManagerReply(ManagerReply),
 }
 
 #[derive(Debug, Clone)]
@@ -253,24 +253,32 @@ impl SignalConfig {
         mut manager: Manager<SledStore, Registered>,
         in_chan_tx: flume::Sender<SignalMsg>,
         replay_timestamp: u64,
-    ) {
+    ) -> anyhow::Result<()> {
         debug!("launching incoming signal message task");
         //        let mut manager = self.manager.unwrap();
-        let messages = manager
-            .receive_messages()
-            .await
-            .context("failed to initialize messages stream")
-            .unwrap();
+        loop {
+            let messages = manager
+                .receive_messages()
+                .await
+                .context("failed to initialize messages stream")?;
 
-        pin_mut!(messages);
+            pin_mut!(messages);
 
-        while let Some(content) = messages.next().await {
-            if content.metadata.timestamp < replay_timestamp {
-                continue;
+            while let Some(content) = messages.next().await {
+                if content.metadata.timestamp < replay_timestamp {
+                    continue;
+                }
+
+                debug!("incoming signal message task: msg received");
+                if in_chan_tx
+                    .send_async(SignalMsg::Received(content))
+                    .await
+                    .is_err()
+                {
+                    debug!("incoming signal message task exiting");
+                    return Ok(());
+                }
             }
-
-            debug!("incoming signal message task: msg received");
-            in_chan_tx.send_async(SignalMsg::Received(content)).await;
         }
     }
 
@@ -286,7 +294,9 @@ impl SignalConfig {
             match req {
                 ManagerRequest::GetAttachment(attachment_pointer) => {
                     if let Ok(data) = manager.get_attachment(&attachment_pointer).await {
-                        tx.send_async(ManagerReply::Attachment(data)).await.unwrap();
+                        tx.send_async(ManagerReply::Attachment(data))
+                            .await
+                            .expect("sending ManagerRequest");
                     } else {
                         drop(tx)
                     }
@@ -300,10 +310,9 @@ impl SignalConfig {
                 SignalMsg::Send(uuid, message) => {
                     debug!("send()");
 
-                    manager
-                        .send_message(uuid, message, timestamp())
-                        .await
-                        .unwrap();
+                    if let Err(e) = manager.send_message(uuid, message, timestamp()).await {
+                        warn!("sending message: {e}");
+                    }
                 }
                 SignalMsg::ManagerRequest(req, tx) => {
                     handle_manager_request(&mut manager, req, tx).await;
@@ -335,6 +344,7 @@ impl Signal {
                     }
                 }
             }
+            debug!("Signal::run() end");
         });
 
         rx_dispatch.await?;
@@ -344,9 +354,8 @@ impl Signal {
 }
 
 pub fn timestamp() -> u64 {
-    let timestamp = std::time::SystemTime::now()
+    std::time::SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("Time went backwards")
-        .as_millis() as u64;
-    timestamp
+        .as_millis() as u64
 }
