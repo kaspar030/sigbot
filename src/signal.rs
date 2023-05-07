@@ -8,8 +8,9 @@ use futures::{pin_mut, StreamExt};
 use log::{debug, warn};
 use presage::prelude::content::Reaction;
 use presage::prelude::proto::data_message::Quote;
+use presage::prelude::proto::sync_message::Sent;
 use presage::prelude::proto::AttachmentPointer;
-use presage::prelude::{Content, ContentBody, DataMessage, SignalServers, Uuid};
+use presage::prelude::{Content, ContentBody, DataMessage, SignalServers, SyncMessage, Uuid};
 use presage::{Manager, Registered, Thread};
 use presage_store_sled::{MigrationConflictStrategy, SledStore};
 use tokio::sync::Mutex;
@@ -67,13 +68,15 @@ impl SignalHandle {
     pub(crate) async fn react(&self, content: &Content, emoji: &str) -> anyhow::Result<()> {
         let thread = Thread::try_from(content).unwrap();
 
+        let datamessage = content.datamessage().expect("contains a datamessage");
+
         let message = ContentBody::DataMessage(DataMessage {
             body: None,
             timestamp: Some(timestamp()),
             reaction: Some(Reaction {
                 emoji: Some(String::from(emoji)),
                 target_author_uuid: Some(content.metadata.sender.uuid.to_string()),
-                target_sent_timestamp: Some(content.metadata.timestamp),
+                target_sent_timestamp: Some(datamessage.timestamp()),
                 ..Default::default()
             }),
             ..Default::default()
@@ -215,9 +218,6 @@ impl SignalConfig {
             MigrationConflictStrategy::Raise,
         )?;
 
-        let incoming_manager = Manager::load_registered(config_store)?;
-        let outgoing_manager = incoming_manager.clone();
-
         let (in_chan_tx, in_chan_rx) = flume::bounded(1024);
         let (out_chan_tx, out_chan_rx) = flume::bounded(1024);
 
@@ -228,6 +228,11 @@ impl SignalConfig {
 
         std::thread::spawn(move || {
             let local = tokio::task::LocalSet::new();
+            let incoming_manager = rt
+                .block_on(Manager::load_registered(config_store))
+                .expect("loaded config store");
+            let outgoing_manager = incoming_manager.clone();
+
             local.spawn_local(SignalConfig::incoming_signal_task(
                 incoming_manager,
                 in_chan_tx,
@@ -358,4 +363,24 @@ pub fn timestamp() -> u64 {
         .duration_since(UNIX_EPOCH)
         .expect("Time went backwards")
         .as_millis() as u64
+}
+
+trait GetDataMessage {
+    fn datamessage(&self) -> Option<&DataMessage>;
+}
+
+impl GetDataMessage for Content {
+    fn datamessage(&self) -> Option<&DataMessage> {
+        match &self.body {
+            ContentBody::SynchronizeMessage(SyncMessage {
+                sent:
+                    Some(Sent {
+                        message: Some(datamessage),
+                        ..
+                    }),
+                ..
+            }) => Some(datamessage),
+            _ => None,
+        }
+    }
 }

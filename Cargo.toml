@@ -5,7 +5,7 @@ edition = "2021"
 authors = [ "Kaspar Schleiser <kaspar@schleiser.de>" ]
 
 [dependencies]
-anyhow = "1.0.70"
+anyhow = "1.0.71"
 async-trait = "0.1.68"
 camino = "1.1.4"
 console-subscriber = "0.1.8"
@@ -20,7 +20,7 @@ presage-store-sled = { git = "https://github.com/whisperfish/presage" }
 qr2term = "0.3.1"
 redlux = "0.6.0"
 shellexpand = "3.1.0"
-tokio = { version = "1.27.0", features = ["rt-multi-thread"] }
+tokio = { version = "1.28.0", features = ["rt-multi-thread"] }
 whisper-rs = "0.6.0"
 
 [patch.crates-io]
