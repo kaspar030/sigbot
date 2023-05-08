@@ -15,13 +15,14 @@ flume = { version = "0.10.14", features = ["async"] }
 futures = "0.3.28"
 log = "0.4.17"
 num_cpus = "1.15.0"
+once_cell = "1.17.1"
 presage = { git = "https://github.com/whisperfish/presage" }
 presage-store-sled = { git = "https://github.com/whisperfish/presage" }
 qr2term = "0.3.1"
 redlux = "0.6.0"
 shellexpand = "3.1.0"
 tokio = { version = "1.28.0", features = ["rt-multi-thread"] }
-whisper-rs = "0.6.0"
+whisper-rs = { git = "https://github.com/tazz4843/whisper-rs" }
 
 [patch.crates-io]
 "curve25519-dalek" = { git = "https://github.com/signalapp/curve25519-dalek", branch = "lizard2" }

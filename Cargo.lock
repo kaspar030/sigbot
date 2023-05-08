@@ -3013,6 +3013,7 @@ dependencies = [
  "futures",
  "log",
  "num_cpus",
+ "once_cell",
  "presage",
  "presage-store-sled",
  "qr2term",
@@ -3736,8 +3737,7 @@ dependencies = [
 [[package]]
 name = "whisper-rs"
 version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "baa9a3e8acdf6d87ae12ed7271261019d1244784c3e2ff81ddd52470db19c9ba"
+source = "git+https://github.com/tazz4843/whisper-rs#0859b41191dcbf176f9924eb82854262c3417b42"
 dependencies = [
  "dashmap",
  "whisper-rs-sys",
@@ -3746,8 +3746,7 @@ dependencies = [
 [[package]]
 name = "whisper-rs-sys"
 version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e92a024aaaef29074137ec75f90c93c91807a21b8b75170e68f388d18f0a346d"
+source = "git+https://github.com/tazz4843/whisper-rs#0859b41191dcbf176f9924eb82854262c3417b42"
 dependencies = [
  "bindgen",
 ]

@@ -3,15 +3,32 @@ use std::{collections::HashMap, sync::Arc};
 use anyhow::anyhow;
 use async_trait::async_trait;
 use log::{debug, trace};
+use once_cell::sync::Lazy;
 use presage::{
     prelude::{proto::AttachmentPointer, Content},
     Thread,
 };
 use tokio::sync::Mutex;
+use whisper_rs::WhisperContext;
 
 use crate::signal::{SignalHandle, SignalMsgHandler};
 
 mod resample;
+
+static MODEL_TINY: Lazy<WhisperContext> =
+    Lazy::new(|| WhisperContext::new("models/ggml-tiny.bin").expect("opening model file"));
+
+static MODEL_BASE: Lazy<WhisperContext> =
+    Lazy::new(|| WhisperContext::new("models/ggml-base.bin").expect("opening model file"));
+
+static MODEL_SMALL: Lazy<WhisperContext> =
+    Lazy::new(|| WhisperContext::new("models/ggml-small.bin").expect("opening model file"));
+
+static MODEL_MEDIUM: Lazy<WhisperContext> =
+    Lazy::new(|| WhisperContext::new("models/ggml-medium.bin").expect("opening model file"));
+
+static MODEL_LARGE: Lazy<WhisperContext> =
+    Lazy::new(|| WhisperContext::new("models/ggml-large-v1.bin").expect("opening model file"));
 
 #[allow(clippy::upper_case_acronyms)]
 enum AudioType {
@@ -19,9 +36,32 @@ enum AudioType {
     M4A,
 }
 
+#[derive(Copy, Clone, Debug, Default, PartialEq, Hash)]
+enum WhisperModel {
+    Tiny,
+    Base,
+    Small,
+    #[default]
+    Medium,
+    Large,
+}
+
+impl WhisperModel {
+    fn instance(&self) -> &Lazy<WhisperContext> {
+        match self {
+            WhisperModel::Tiny => &MODEL_TINY,
+            WhisperModel::Base => &MODEL_BASE,
+            WhisperModel::Small => &MODEL_SMALL,
+            WhisperModel::Medium => &MODEL_MEDIUM,
+            WhisperModel::Large => &MODEL_LARGE,
+        }
+    }
+}
+
 #[derive(Default, Copy, Clone, Debug, Hash, PartialEq)]
 struct BotThreadState {
     enabled: bool,
+    whisper_model: WhisperModel,
 }
 
 struct BotState {
@@ -52,9 +92,12 @@ impl Bot {
     async fn process_audio_attachment(
         &self,
         signal: &SignalHandle,
+        content: &Content,
         attachment_pointer: &AttachmentPointer,
     ) -> anyhow::Result<String> {
         use redlux::Decoder;
+        let thread = Thread::try_from(content).expect("extracting thread");
+
         let Ok(attachment_data) = signal.get_attachment(attachment_pointer).await else {
                 log::warn!("failed to fetch attachment");
                 return Err(anyhow!("failed to fetch attachment"));
@@ -70,6 +113,11 @@ impl Bot {
         //     let state = self.state.lock().await;
         //     state.whisper_sema.acquire().await.unwrap()
         // };
+
+        let model = {
+            let mut state = self.state.lock().await;
+            state.threads.entry(thread).or_default().whisper_model
+        };
 
         let audio_type = {
             if let Some(file_name) = &attachment_pointer.file_name {
@@ -114,12 +162,14 @@ impl Bot {
             debug!("audio length: {:.2?}", audio_len);
 
             debug!("loading model...");
-            let ctx = WhisperContext::new("models/ggml-large.bin").expect("opening model file");
-            ctx.create_key(()).expect("failed to create key");
+            let model = model.instance();
+
+            let state = &mut model
+                .create_state()
+                .expect("failed to create whisper state");
 
             debug!("loading model done, starting inference");
             let mut params = FullParams::new(SamplingStrategy::default());
-            params.set_translate(false);
             params.set_n_threads(num_cpus::get_physical() as i32);
 
             // let model_context = ctx
@@ -129,23 +179,22 @@ impl Bot {
 
             let start = std::time::Instant::now();
 
-            ctx.full(&(), params, &decoded[..])
+            state
+                .full(params, &decoded[..])
                 .expect("failed to run model");
             // fetch the results
-            let num_segments = ctx.full_n_segments(&()).expect("getting segments");
+            let num_segments = state.full_n_segments().expect("getting segments");
             if num_segments == 0 {
                 debug!("no voice found");
                 tx.send(Ok("[no voice found]".to_string())).unwrap();
             } else {
                 let mut out = Vec::new();
                 for i in 0..num_segments {
-                    let segment = ctx
-                        .full_get_segment_text(&(), i)
+                    let segment = state
+                        .full_get_segment_text(i)
                         .expect("failed to get segment");
-                    let start_timestamp =
-                        ctx.full_get_segment_t0(&(), i).expect("getting segment t0");
-                    let end_timestamp =
-                        ctx.full_get_segment_t1(&(), i).expect("getting segment t1");
+                    let start_timestamp = state.full_get_segment_t0(i).expect("getting segment t0");
+                    let end_timestamp = state.full_get_segment_t1(i).expect("getting segment t1");
                     debug!("[{} - {}]: {}", start_timestamp, end_timestamp, segment);
                     out.push(segment);
                 }
@@ -170,14 +219,14 @@ impl Bot {
         attachments: &Vec<AttachmentPointer>,
     ) -> anyhow::Result<()> {
         debug!("datamessage, attachments:{}", attachments.len());
-        let thread = Thread::try_from(content).unwrap();
-
         for attachment in attachments {
             match attachment.content_type() {
                 "audio/aac" => {
                     debug!("Content-type: audio/aac");
                     signal.react(content, "🦻").await?;
-                    let res = self.process_audio_attachment(signal, attachment).await;
+                    let res = self
+                        .process_audio_attachment(signal, content, attachment)
+                        .await;
                     debug!("audio attachment processed");
 
                     match res {
@@ -219,6 +268,19 @@ impl SignalMsgHandler for Bot {
             state.threads.entry(thread.clone()).or_default().enabled = enabled;
         }
 
+        async fn thread_set_model(
+            state: &Arc<Mutex<BotState>>,
+            thread: &Thread,
+            model: WhisperModel,
+        ) {
+            let mut state = state.lock().await;
+            state
+                .threads
+                .entry(thread.clone())
+                .or_default()
+                .whisper_model = model;
+        }
+
         let thread_enabled = thread_get_state(&self.state, &thread).await;
 
         match &content.body {
@@ -248,6 +310,32 @@ impl SignalMsgHandler for Bot {
                         if !thread_enabled {
                             thread_set_state(&self.state, &thread, true).await;
                         }
+                    }
+                    // TODO: this needs deduplication
+                    "/bot model tiny" => {
+                        debug!("set model tiny");
+                        signal.react(content, "👍").await.unwrap();
+                        thread_set_model(&self.state, &thread, WhisperModel::Tiny).await;
+                    }
+                    "/bot model base" => {
+                        debug!("set model base");
+                        signal.react(content, "👍").await.unwrap();
+                        thread_set_model(&self.state, &thread, WhisperModel::Base).await;
+                    }
+                    "/bot model small" => {
+                        debug!("set model small");
+                        signal.react(content, "👍").await.unwrap();
+                        thread_set_model(&self.state, &thread, WhisperModel::Small).await;
+                    }
+                    "/bot model medium" => {
+                        debug!("set model medium");
+                        signal.react(content, "👍").await.unwrap();
+                        thread_set_model(&self.state, &thread, WhisperModel::Medium).await;
+                    }
+                    "/bot model large" => {
+                        debug!("set model large");
+                        signal.react(content, "👍").await.unwrap();
+                        thread_set_model(&self.state, &thread, WhisperModel::Large).await;
                     }
                     "/bot disable" => {
                         debug!("disable");
