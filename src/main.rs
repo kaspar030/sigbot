@@ -1,14 +1,14 @@
-use std::collections::HashMap;
 
-use anyhow::anyhow;
-use async_trait::async_trait;
+
+
+
 use env_logger::Env;
-use log::{debug, trace};
+use log::{debug};
 
 mod bot;
 mod debug;
 mod signal;
-use signal::{SignalConfig, SignalHandle, SignalMsgHandler};
+use signal::{SignalConfig};
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> anyhow::Result<()> {

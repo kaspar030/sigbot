@@ -290,7 +290,7 @@ impl SignalMsgHandler for Bot {
                         message:
                             Some(DataMessage {
                                 body: Some(body),
-                                quote,
+                                quote: _,
                                 ..
                             }),
                         ..
