@@ -28,7 +28,7 @@ static MODEL_MEDIUM: Lazy<WhisperContext> =
     Lazy::new(|| WhisperContext::new("models/ggml-medium.bin").expect("opening model file"));
 
 static MODEL_LARGE: Lazy<WhisperContext> =
-    Lazy::new(|| WhisperContext::new("models/ggml-large-v1.bin").expect("opening model file"));
+    Lazy::new(|| WhisperContext::new("models/ggml-large.bin").expect("opening model file"));
 
 #[allow(clippy::upper_case_acronyms)]
 enum AudioType {
@@ -41,8 +41,8 @@ enum WhisperModel {
     Tiny,
     Base,
     Small,
-    #[default]
     Medium,
+    #[default]
     Large,
 }
 
@@ -171,6 +171,8 @@ impl Bot {
             debug!("loading model done, starting inference");
             let mut params = FullParams::new(SamplingStrategy::default());
             params.set_n_threads(num_cpus::get_physical() as i32);
+            params.set_translate(false);
+            params.set_language(Some("auto"));
 
             // let model_context = ctx
             //     .tokenize("Die Sprache ist Deutsch.", 64)

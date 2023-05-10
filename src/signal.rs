@@ -4,13 +4,15 @@ use std::time::UNIX_EPOCH;
 use anyhow::{anyhow, Context};
 use async_trait::async_trait;
 use camino::Utf8PathBuf;
-use futures::{pin_mut, StreamExt};
-use log::{debug, warn};
+use futures::{future, pin_mut, StreamExt};
+use log::{debug, info, warn};
 use presage::prelude::content::Reaction;
 use presage::prelude::proto::data_message::Quote;
 use presage::prelude::proto::sync_message::Sent;
 use presage::prelude::proto::AttachmentPointer;
-use presage::prelude::{Content, ContentBody, DataMessage, SignalServers, SyncMessage, Uuid};
+use presage::prelude::{
+    Content, ContentBody, DataMessage, GroupContextV2, SignalServers, SyncMessage,
+};
 use presage::{Manager, Registered, Thread};
 use presage_store_sled::{MigrationConflictStrategy, SledStore};
 use tokio::sync::Mutex;
@@ -23,7 +25,7 @@ pub trait SignalMsgHandler {
 #[derive(Debug, Clone)]
 pub enum SignalMsg {
     Received(Content),
-    Send(Uuid, ContentBody),
+    Send(Thread, ContentBody),
     ManagerRequest(ManagerRequest, flume::Sender<ManagerReply>),
     //    ManagerReply(ManagerReply),
 }
@@ -53,22 +55,28 @@ impl SignalHandle {
         Self { out_chan_tx }
     }
 
-    pub(crate) async fn send(&self, uuid: &Uuid, body: &str) -> anyhow::Result<()> {
+    async fn send_message(&self, thread: Thread, message: ContentBody) -> anyhow::Result<()> {
+        self.out_chan_tx
+            .send_async(SignalMsg::Send(thread.clone(), message))
+            .await?;
+        Ok(())
+    }
+
+    pub(crate) async fn send(&self, thread: &Thread, body: &str) -> anyhow::Result<()> {
         let message = ContentBody::DataMessage(DataMessage {
             body: Some(String::from(body)),
             timestamp: Some(timestamp()),
             ..Default::default()
         });
-        self.out_chan_tx
-            .send_async(SignalMsg::Send(*uuid, message))
-            .await?;
-        Ok(())
+        self.send_message(thread.clone(), message).await
     }
 
     pub(crate) async fn react(&self, content: &Content, emoji: &str) -> anyhow::Result<()> {
         let thread = Thread::try_from(content).unwrap();
 
-        let datamessage = content.datamessage().expect("contains a datamessage");
+        let datamessage = content
+            .datamessage()
+            .context(anyhow!("extracting datamessage for react()"))?;
 
         let message = ContentBody::DataMessage(DataMessage {
             body: None,
@@ -82,13 +90,7 @@ impl SignalHandle {
             ..Default::default()
         });
 
-        if let Thread::Contact(uuid) = thread {
-            self.out_chan_tx
-                .send_async(SignalMsg::Send(uuid, message))
-                .await?;
-        }
-
-        Ok(())
+        self.send_message(thread, message).await
     }
 
     pub(crate) async fn quote(&self, content: &Content, body: &str) -> anyhow::Result<()> {
@@ -105,25 +107,7 @@ impl SignalHandle {
             ..Default::default()
         });
 
-        if let Thread::Contact(uuid) = thread {
-            self.out_chan_tx
-                .send_async(SignalMsg::Send(uuid, message))
-                .await?;
-        }
-
-        Ok(())
-    }
-
-    pub async fn reply(&self, thread: &Thread, msg: &str) -> anyhow::Result<()> {
-        match thread {
-            Thread::Contact(uuid) => {
-                self.send(uuid, msg).await?;
-            }
-            Thread::Group(_bytes) => {
-                debug!("reply to group not implemented");
-            }
-        }
-        Ok(())
+        self.send_message(thread, message).await
     }
 
     pub async fn get_attachment(
@@ -174,36 +158,40 @@ impl SignalConfig {
         })
     }
 
-    // pub async fn link(&mut self) -> anyhow::Result<()> {
-    //     let config_store = self.config_store()?;
+    pub async fn link(&mut self) -> anyhow::Result<()> {
+        let config_store = SledStore::open_with_passphrase(
+            &self.db_path,
+            Some(""),
+            MigrationConflictStrategy::Raise,
+        )?;
 
-    //     let (provisioning_link_tx, provisioning_link_rx) = oneshot::channel();
-    //     let manager = future::join(
-    //         Manager::link_secondary_device(
-    //             config_store,
-    //             self.servers,
-    //             self.device_name.clone(),
-    //             provisioning_link_tx,
-    //         ),
-    //         async move {
-    //             match provisioning_link_rx.await {
-    //                 Ok(url) => qr2term::print_qr(url.to_string()).expect("failed to render qrcode"),
-    //                 Err(e) => log::error!("Error linking device: {e}"),
-    //             }
-    //         },
-    //     )
-    //     .await;
+        let (provisioning_link_tx, provisioning_link_rx) =
+            futures::channel::oneshot::channel::<url::Url>();
+        let manager = future::join(
+            Manager::link_secondary_device(
+                config_store,
+                self.servers,
+                self.device_name.clone(),
+                provisioning_link_tx,
+            ),
+            async move {
+                match provisioning_link_rx.await {
+                    Ok(url) => qr2term::print_qr(url.to_string()).expect("failed to render qrcode"),
+                    Err(e) => log::error!("Error linking device: {e}"),
+                }
+            },
+        )
+        .await;
 
-    //     match manager {
-    //         (Ok(manager), _) => {
-    //             let uuid = manager.whoami().await.unwrap().uuid;
-    //             println!("{uuid:?}");
-    //             self.manager = Some(manager);
-    //             Ok(())
-    //         }
-    //         (Err(err), _) => Err(err.into()),
-    //     }
-    // }
+        match manager {
+            (Ok(manager), _) => {
+                let uuid = manager.whoami().await.unwrap().uuid;
+                info!("Linking successful. UUID={uuid:?}");
+                Ok(())
+            }
+            (Err(err), _) => Err(err.into()),
+        }
+    }
 
     pub fn register_handler(mut self, handler: Box<dyn SignalMsgHandler + Send>) -> Self {
         self.handlers.push(Arc::new(Mutex::new(handler)));
@@ -312,10 +300,30 @@ impl SignalConfig {
         debug!("outgoing signal message task started");
         while let Ok(msg) = out_chan_rx.recv_async().await {
             match msg {
-                SignalMsg::Send(uuid, message) => {
+                SignalMsg::Send(thread, message) => {
                     debug!("send()");
 
-                    if let Err(e) = manager.send_message(uuid, message, timestamp()).await {
+                    if let Err(e) = match thread {
+                        Thread::Contact(uuid) => manager
+                            .send_message(uuid, message, timestamp())
+                            .await
+                            .map_err(|e| e.into()),
+                        Thread::Group(master_key_bytes) => {
+                            if let ContentBody::DataMessage(mut message) = message {
+                                message.group_v2 = Some(GroupContextV2 {
+                                    master_key: Some(master_key_bytes.to_vec()),
+                                    revision: Some(2),
+                                    ..Default::default()
+                                });
+                                manager
+                                    .send_message_to_group(&master_key_bytes, message, timestamp())
+                                    .await
+                                    .map_err(|e| e.into())
+                            } else {
+                                Err(anyhow!("unexpected SignalMsg::Send group format"))
+                            }
+                        }
+                    } {
                         warn!("sending message: {e}");
                     }
                 }
@@ -379,7 +387,8 @@ impl GetDataMessage for Content {
                         ..
                     }),
                 ..
-            }) => Some(datamessage),
+            })
+            | ContentBody::DataMessage(datamessage) => Some(datamessage),
             _ => None,
         }
     }
