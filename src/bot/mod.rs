@@ -1,4 +1,4 @@
-use std::{collections::HashMap, sync::Arc};
+use std::sync::Arc;
 
 use anyhow::anyhow;
 use async_trait::async_trait;
@@ -8,12 +8,67 @@ use presage::{
     prelude::{proto::AttachmentPointer, Content},
     Thread,
 };
+use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 use whisper_rs::WhisperContext;
 
+use crate::quick_hash::QuickHash;
 use crate::signal::{SignalHandle, SignalMsgHandler};
 
 mod resample;
+
+trait ThreadConfig {
+    fn get(&self) -> anyhow::Result<BotThreadState>;
+    fn put(&self, config: BotThreadState) -> anyhow::Result<()>;
+}
+
+impl ThreadConfig for Thread {
+    fn get(&self) -> anyhow::Result<BotThreadState> {
+        fn default(thread: &Thread) -> BotThreadState {
+            let mut config = BotThreadState::default();
+            if let Thread::Group(_) = thread {
+                config.enabled = false;
+            }
+            debug!("default config for {:?}: {:#?}", thread, &config);
+            config
+        }
+
+        let tx = DB.tx(true)?;
+        let bucket = tx.get_or_create_bucket("threads")?;
+        let res = bucket
+            .get(&bincode::serialize(&self)?)
+            .map_or_else(
+                || Ok(default(self)),
+                |kv| {
+                    if let jammdb::Data::KeyValue(kv) = kv {
+                        let config = bincode::deserialize(kv.value())?;
+                        debug!("loaded config for {:?}: {:#?}", &self, &config);
+                        return Ok(config);
+                    }
+                    unreachable!();
+                },
+            )
+            .unwrap_or_else(|e: anyhow::Error| {
+                debug!(
+                    "error loading config for {:?}: {:#?} (using default)",
+                    self, e
+                );
+                default(self)
+            });
+
+        tx.commit()?;
+        Ok(res)
+    }
+
+    fn put(&self, config: BotThreadState) -> anyhow::Result<()> {
+        debug!("storing config for {:?}: {:#?}", &self, &config);
+        let tx = DB.tx(true)?;
+        let bucket = tx.get_or_create_bucket("threads")?;
+        bucket.put(bincode::serialize(&self)?, bincode::serialize(&config)?)?;
+        tx.commit()?;
+        Ok(())
+    }
+}
 
 static MODEL_TINY: Lazy<WhisperContext> =
     Lazy::new(|| WhisperContext::new("models/ggml-tiny.bin").expect("opening model file"));
@@ -30,13 +85,18 @@ static MODEL_MEDIUM: Lazy<WhisperContext> =
 static MODEL_LARGE: Lazy<WhisperContext> =
     Lazy::new(|| WhisperContext::new("models/ggml-large.bin").expect("opening model file"));
 
+static DB: Lazy<jammdb::DB> = Lazy::new(|| {
+    let path = shellexpand::tilde("~/.config/sigbot/tester/threads.db").into_owned();
+    jammdb::DB::open(path).expect("opening thread config db")
+});
+
 #[allow(clippy::upper_case_acronyms)]
 enum AudioType {
     AAC,
     M4A,
 }
 
-#[derive(Copy, Clone, Debug, Default, PartialEq, Hash)]
+#[derive(Copy, Clone, Debug, Default, PartialEq, Hash, Serialize, Deserialize)]
 enum WhisperModel {
     Tiny,
     Base,
@@ -58,21 +118,19 @@ impl WhisperModel {
     }
 }
 
-#[derive(Default, Copy, Clone, Debug, Hash, PartialEq)]
+#[derive(Default, Copy, Clone, Debug, Hash, PartialEq, Serialize, Deserialize)]
 struct BotThreadState {
     enabled: bool,
     whisper_model: WhisperModel,
 }
 
 struct BotState {
-    threads: HashMap<Thread, BotThreadState>,
     whisper_sema: tokio::sync::Semaphore,
 }
 
 impl BotState {
     pub fn new() -> Self {
         Self {
-            threads: HashMap::new(),
             whisper_sema: tokio::sync::Semaphore::new(1),
         }
     }
@@ -92,12 +150,11 @@ impl Bot {
     async fn process_audio_attachment(
         &self,
         signal: &SignalHandle,
+        thread_state: &BotThreadState,
         content: &Content,
         attachment_pointer: &AttachmentPointer,
     ) -> anyhow::Result<String> {
         use redlux::Decoder;
-        let thread = Thread::try_from(content).expect("extracting thread");
-
         let Ok(attachment_data) = signal.get_attachment(attachment_pointer).await else {
                 log::warn!("failed to fetch attachment");
                 return Err(anyhow!("failed to fetch attachment"));
@@ -114,10 +171,7 @@ impl Bot {
         //     state.whisper_sema.acquire().await.unwrap()
         // };
 
-        let model = {
-            let mut state = self.state.lock().await;
-            state.threads.entry(thread).or_default().whisper_model
-        };
+        let model = thread_state.whisper_model;
 
         let audio_type = {
             if let Some(file_name) = &attachment_pointer.file_name {
@@ -217,6 +271,7 @@ impl Bot {
     async fn handle_attachments(
         &self,
         signal: &SignalHandle,
+        thread_state: &BotThreadState,
         content: &Content,
         attachments: &Vec<AttachmentPointer>,
     ) -> anyhow::Result<()> {
@@ -227,7 +282,7 @@ impl Bot {
                     debug!("Content-type: audio/aac");
                     signal.react(content, "🦻").await?;
                     let res = self
-                        .process_audio_attachment(signal, content, attachment)
+                        .process_audio_attachment(signal, thread_state, content, attachment)
                         .await;
                     debug!("audio attachment processed");
 
@@ -260,30 +315,8 @@ impl SignalMsgHandler for Bot {
             return;
         };
 
-        async fn thread_get_state(state: &Arc<Mutex<BotState>>, thread: &Thread) -> bool {
-            let mut state = state.lock().await;
-            state.threads.entry(thread.clone()).or_default().enabled
-        }
-
-        async fn thread_set_state(state: &Arc<Mutex<BotState>>, thread: &Thread, enabled: bool) {
-            let mut state = state.lock().await;
-            state.threads.entry(thread.clone()).or_default().enabled = enabled;
-        }
-
-        async fn thread_set_model(
-            state: &Arc<Mutex<BotState>>,
-            thread: &Thread,
-            model: WhisperModel,
-        ) {
-            let mut state = state.lock().await;
-            state
-                .threads
-                .entry(thread.clone())
-                .or_default()
-                .whisper_model = model;
-        }
-
-        let thread_enabled = thread_get_state(&self.state, &thread).await;
+        let mut thread_config = thread.get().unwrap();
+        let thread_config_hash = thread_config.quick_hash();
 
         match &content.body {
             ContentBody::SynchronizeMessage(SyncMessage {
@@ -304,47 +337,52 @@ impl SignalMsgHandler for Bot {
                 match body.as_str() {
                     "/bot ping" => {
                         debug!("ping");
-                        signal.quote(content, "pong").await.unwrap();
+                        let msg_text = {
+                            format!(
+                                "pong{}",
+                                if !thread_config.enabled {
+                                    " (disabled)"
+                                } else {
+                                    ""
+                                }
+                            )
+                        };
+                        signal.quote(content, &msg_text).await.unwrap();
                     }
                     "/bot enable" => {
                         debug!("enable");
                         signal.react(content, "👍").await.unwrap();
-                        if !thread_enabled {
-                            thread_set_state(&self.state, &thread, true).await;
-                        }
+                        thread_config.enabled = true;
                     }
                     // TODO: this needs deduplication
                     "/bot model tiny" => {
                         debug!("set model tiny");
                         signal.react(content, "👍").await.unwrap();
-                        thread_set_model(&self.state, &thread, WhisperModel::Tiny).await;
+                        thread_config.whisper_model = WhisperModel::Tiny;
                     }
                     "/bot model base" => {
                         debug!("set model base");
                         signal.react(content, "👍").await.unwrap();
-                        thread_set_model(&self.state, &thread, WhisperModel::Base).await;
+                        thread_config.whisper_model = WhisperModel::Base;
                     }
                     "/bot model small" => {
                         debug!("set model small");
                         signal.react(content, "👍").await.unwrap();
-                        thread_set_model(&self.state, &thread, WhisperModel::Small).await;
+                        thread_config.whisper_model = WhisperModel::Small;
                     }
                     "/bot model medium" => {
                         debug!("set model medium");
-                        signal.react(content, "👍").await.unwrap();
-                        thread_set_model(&self.state, &thread, WhisperModel::Medium).await;
+                        thread_config.whisper_model = WhisperModel::Medium;
                     }
                     "/bot model large" => {
                         debug!("set model large");
                         signal.react(content, "👍").await.unwrap();
-                        thread_set_model(&self.state, &thread, WhisperModel::Large).await;
+                        thread_config.whisper_model = WhisperModel::Large;
                     }
                     "/bot disable" => {
                         debug!("disable");
                         signal.react(content, "👍").await.unwrap();
-                        if thread_enabled {
-                            thread_set_state(&self.state, &thread, false).await;
-                        }
+                        thread_config.enabled = false;
                     }
                     _ => {
                         handled = false;
@@ -352,6 +390,9 @@ impl SignalMsgHandler for Bot {
                 };
 
                 if handled {
+                    if thread_config.quick_hash() != thread_config_hash {
+                        thread.put(thread_config).expect("saving thread config");
+                    }
                     return;
                 }
             }
@@ -367,17 +408,13 @@ impl SignalMsgHandler for Bot {
                         ..
                     }),
                 ..
-            }) => {
-                self.handle_attachments(signal, content, attachments)
-                    .await
-                    .unwrap();
-            }
-            ContentBody::DataMessage(DataMessage {
+            })
+            | ContentBody::DataMessage(DataMessage {
                 body: None,
                 attachments,
                 ..
             }) => {
-                self.handle_attachments(signal, content, attachments)
+                self.handle_attachments(signal, &thread_config, content, attachments)
                     .await
                     .unwrap();
             }

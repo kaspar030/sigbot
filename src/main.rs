@@ -5,6 +5,7 @@ use log::debug;
 
 mod bot;
 mod debug;
+mod quick_hash;
 mod signal;
 use signal::SignalConfig;
 
