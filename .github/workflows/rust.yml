@@ -19,7 +19,7 @@ jobs:
       uses: mozilla-actions/sccache-action@v0.0.3
     - uses: actions/checkout@v3
     - name: build deps
-      run: sudo apt-get update && sudo apt-get -y install libasound2-dev
+      run: sudo apt-get update && sudo apt-get -y install libasound2-dev libclblast-dev --no-install-recommends
     - name: Build
       run: cargo build --verbose
     - name: Run tests
