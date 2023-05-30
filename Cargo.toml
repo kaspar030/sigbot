@@ -28,7 +28,7 @@ serde_json = "1.0.96"
 shellexpand = "3.1.0"
 tokio = { version = "1.28.2", features = ["rt-multi-thread"] }
 url = "2.3.1"
-whisper-rs = { version = "0.8.0", features = ["opencl"] }
+whisper-rs = { git = "https://github.com/tazz4843/whisper-rs", features = ["opencl"]}
 
 [patch.crates-io]
 "curve25519-dalek" = { git = "https://github.com/signalapp/curve25519-dalek", branch = "lizard2" }
