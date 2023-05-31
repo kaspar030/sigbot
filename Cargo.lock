@@ -2333,7 +2333,7 @@ checksum = "5b40af805b3121feab8a3c29f04d8ad262fa8e0561883e7653e024ae4479e6de"
 [[package]]
 name = "presage"
 version = "0.6.0-dev"
-source = "git+https://github.com/whisperfish/presage#9935bb066d51c3b60152b93b68b4834118db9696"
+source = "git+https://github.com/whisperfish/presage#bc27cb9081d5c6739eb5c161d466c03e86ffa62b"
 dependencies = [
  "base64 0.12.3",
  "futures",
@@ -2352,7 +2352,7 @@ dependencies = [
 [[package]]
 name = "presage-store-sled"
 version = "0.6.0-dev"
-source = "git+https://github.com/whisperfish/presage#9935bb066d51c3b60152b93b68b4834118db9696"
+source = "git+https://github.com/whisperfish/presage#bc27cb9081d5c6739eb5c161d466c03e86ffa62b"
 dependencies = [
  "async-trait",
  "base64 0.12.3",
