@@ -2644,9 +2644,9 @@ checksum = "f2ff9a1f06a88b01621b7ae906ef0211290d1c8a168a15542486a8f61c0833b9"
 
 [[package]]
 name = "redlux"
-version = "0.6.0"
+version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a71fd471caf8d64492eb6a45d021c319fd5548c8e4fdbafb87c9211e16dad171"
+checksum = "a740e99cfd0a877d290e9e31e965f6e76f017373b03d1896ff6957ff21aa2fed"
 dependencies = [
  "fdk-aac",
  "mp4",
