@@ -16,7 +16,7 @@ env_logger = "0.10.0"
 flume = { version = "0.10.14", features = ["async"] }
 futures = "0.3.28"
 jammdb = "0.10.0"
-log = "0.4.19"
+log = "0.4.20"
 num_cpus = "1.16.0"
 once_cell = "1.18.0"
 presage = { git = "https://github.com/whisperfish/presage" }
