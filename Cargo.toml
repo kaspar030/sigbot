@@ -9,7 +9,7 @@ anyhow = "1.0.75"
 async-trait = "0.1.73"
 bincode = "1.3.3"
 camino = "1.1.6"
-clap = { version = "4.4.0", features = ["cargo", "env"] }
+clap = { version = "4.4.1", features = ["cargo", "env"] }
 console-subscriber = "0.1.10"
 dasp = { version = "0.11.0", features = ["signal", "ring_buffer", "interpolate-sinc", "interpolate"] }
 env_logger = "0.10.0"
