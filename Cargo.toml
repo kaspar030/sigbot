@@ -34,4 +34,4 @@ whisper-rs = { git = "https://github.com/tazz4843/whisper-rs" }
 opencl = ["whisper-rs/opencl"]
 
 [patch.crates-io]
-"curve25519-dalek" = { git = "https://github.com/signalapp/curve25519-dalek", branch = "lizard2" }
+"curve25519-dalek" = { git = "https://github.com/signalapp/curve25519-dalek", tag = 'signal-curve25519-4.0.0' }
