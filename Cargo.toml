@@ -15,7 +15,7 @@ dasp = { version = "0.11.0", features = ["signal", "ring_buffer", "interpolate-s
 env_logger = "0.10.0"
 flume = { version = "0.11.0", features = ["async"] }
 futures = "0.3.29"
-jammdb = "0.10.0"
+jammdb = "0.11.0"
 log = "0.4.20"
 num_cpus = "1.16.0"
 once_cell = "1.18.0"
