@@ -1,7 +1,7 @@
 use anyhow::Result;
 use clap::{crate_version, Arg, Command};
 use env_logger::Env;
-use log::debug;
+use log::{debug, info};
 
 mod bot;
 mod debug;
@@ -47,9 +47,11 @@ async fn main() -> Result<()> {
 
 async fn run_command(profile: &str) -> anyhow::Result<()> {
     env_logger::Builder::from_env(
-        Env::default().default_filter_or(format!("{}=warn", env!("CARGO_PKG_NAME"))),
+        Env::default().default_filter_or(format!("{}=info", env!("CARGO_PKG_NAME"))),
     )
     .init();
+
+    info!("starting");
 
     let signal = SignalConfig::new(profile)?
         .register_handler(Box::new(bot::Bot::new()))

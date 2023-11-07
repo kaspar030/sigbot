@@ -151,14 +151,14 @@ impl Bot {
         &self,
         signal: &SignalHandle,
         thread_state: &BotThreadState,
-        content: &Content,
+        _content: &Content,
         attachment_pointer: &AttachmentPointer,
     ) -> anyhow::Result<String> {
         use redlux::Decoder;
         let Ok(attachment_data) = signal.get_attachment(attachment_pointer).await else {
-                log::warn!("failed to fetch attachment");
-                return Err(anyhow!("failed to fetch attachment"));
-            };
+            log::warn!("failed to fetch attachment");
+            return Err(anyhow!("failed to fetch attachment"));
+        };
 
         debug!(
             "processing AAC attachment with size {}",

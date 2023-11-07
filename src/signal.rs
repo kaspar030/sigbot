@@ -28,6 +28,7 @@ pub enum SignalMsg {
     Send(Thread, ContentBody),
     ManagerRequest(ManagerRequest, flume::Sender<ManagerReply>),
     //    ManagerReply(ManagerReply),
+    Err(String),
 }
 
 #[derive(Debug, Clone)]
@@ -83,7 +84,7 @@ impl SignalHandle {
             timestamp: Some(timestamp()),
             reaction: Some(Reaction {
                 emoji: Some(String::from(emoji)),
-                target_author_uuid: Some(content.metadata.sender.uuid.to_string()),
+                target_author_aci: Some(content.metadata.sender.uuid.to_string()),
                 target_sent_timestamp: Some(datamessage.timestamp()),
                 ..Default::default()
             }),
@@ -100,7 +101,7 @@ impl SignalHandle {
             body: Some(body.into()),
             timestamp: Some(timestamp()),
             quote: Some(Quote {
-                author_uuid: Some(content.metadata.sender.uuid.to_string()),
+                author_aci: Some(content.metadata.sender.uuid.to_string()),
                 id: Some(content.metadata.timestamp),
                 ..Default::default()
             }),
@@ -219,6 +220,7 @@ impl SignalConfig {
             let incoming_manager = rt
                 .block_on(Manager::load_registered(config_store))
                 .expect("loaded config store");
+
             let outgoing_manager = incoming_manager.clone();
 
             local.spawn_local(SignalConfig::incoming_signal_task(
@@ -230,7 +232,7 @@ impl SignalConfig {
                 outgoing_manager,
                 out_chan_rx,
             ));
-            rt.block_on(local);
+            rt.block_on(local)
         });
 
         let signal = Signal {
@@ -250,10 +252,17 @@ impl SignalConfig {
         debug!("launching incoming signal message task");
         //        let mut manager = self.manager.unwrap();
         loop {
-            let messages = manager
+            let messages = match manager
                 .receive_messages()
                 .await
-                .context("failed to initialize messages stream")?;
+                .context("failed to initialize messages stream")
+            {
+                Ok(x) => x,
+                Err(e) => {
+                    in_chan_tx.send_async(SignalMsg::Err(e.to_string())).await?;
+                    return Err(e);
+                }
+            };
 
             pin_mut!(messages);
 
@@ -346,14 +355,29 @@ impl Signal {
         let handlers = self.handlers.clone();
         let rx_dispatch = tokio::spawn(async move {
             let mut signal_handle = SignalHandle::new(out_chan_tx);
-            while let Ok(msg) = in_chan_rx.recv_async().await {
-                debug!("incoming msg");
-                if let SignalMsg::Received(msg) = msg {
-                    for handler in &handlers {
-                        let handler = handler.clone();
-                        let handler = handler.lock().await;
-                        let f = handler.handle(&msg, &mut signal_handle);
-                        f.await;
+            loop {
+                match in_chan_rx.recv_async().await {
+                    Ok(msg) => {
+                        debug!("incoming msg");
+                        match msg {
+                            SignalMsg::Received(msg) => {
+                                for handler in &handlers {
+                                    let handler = handler.clone();
+                                    let handler = handler.lock().await;
+                                    let f = handler.handle(&msg, &mut signal_handle);
+                                    f.await;
+                                }
+                            }
+                            SignalMsg::Err(s) => {
+                                warn!("Signal::run() incoming error: {s}");
+                                break;
+                            }
+                            _ => {}
+                        }
+                    }
+                    Err(e) => {
+                        debug!("Signal::run() RecvError: {e}");
+                        break;
                     }
                 }
             }
