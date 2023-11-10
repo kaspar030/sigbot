@@ -12,7 +12,7 @@ camino = "1.1.6"
 clap = { version = "4.4.8", features = ["cargo", "env"] }
 console-subscriber = "0.2.0"
 dasp = { version = "0.11.0", features = ["signal", "ring_buffer", "interpolate-sinc", "interpolate"] }
-env_logger = "0.10.0"
+env_logger = "0.10.1"
 flume = { version = "0.11.0", features = ["async"] }
 futures = "0.3.29"
 jammdb = "0.11.0"
