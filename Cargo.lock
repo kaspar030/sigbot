@@ -324,9 +324,9 @@ dependencies = [
 
 [[package]]
 name = "bindgen"
-version = "0.68.1"
+version = "0.69.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "726e4313eb6ec35d2730258ad4e15b547ee75d6afaa1361a922e78e59b7d8078"
+checksum = "9ffcebc3849946a7170a05992aac39da343a90676ab392c51a4280981d6379c2"
 dependencies = [
  "bitflags 2.4.1",
  "cexpr",
@@ -3625,16 +3625,16 @@ dependencies = [
 
 [[package]]
 name = "whisper-rs"
-version = "0.9.0-rc.2"
-source = "git+https://github.com/tazz4843/whisper-rs#73e33a182c3e608ac5947375b4ca3f8ee0ad4253"
+version = "0.10.0"
+source = "git+https://github.com/tazz4843/whisper-rs#eee78dabaa67d3e6fa093a098c141340c1986168"
 dependencies = [
  "whisper-rs-sys",
 ]
 
 [[package]]
 name = "whisper-rs-sys"
-version = "0.7.3"
-source = "git+https://github.com/tazz4843/whisper-rs#73e33a182c3e608ac5947375b4ca3f8ee0ad4253"
+version = "0.8.0"
+source = "git+https://github.com/tazz4843/whisper-rs#eee78dabaa67d3e6fa093a098c141340c1986168"
 dependencies = [
  "bindgen",
  "cfg-if",
