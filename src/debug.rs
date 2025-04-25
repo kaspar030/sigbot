@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use presage::prelude::{Content, ContentBody};
+use presage::libsignal_service::content::{Content, ContentBody};
 
 use crate::{
     debug,

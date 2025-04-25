@@ -6,15 +6,14 @@ use async_trait::async_trait;
 use camino::Utf8PathBuf;
 use futures::{future, pin_mut, StreamExt};
 use log::{debug, info, warn};
-use presage::prelude::content::Reaction;
-use presage::prelude::proto::data_message::Quote;
-use presage::prelude::proto::sync_message::Sent;
-use presage::prelude::proto::AttachmentPointer;
-use presage::prelude::{
-    Content, ContentBody, DataMessage, GroupContextV2, SignalServers, SyncMessage,
+use presage::libsignal_service::configuration::SignalServers;
+use presage::libsignal_service::protocol::ServiceId;
+use presage::libsignal_service::{
+    content::{Content, ContentBody, DataMessage, GroupContextV2, Reaction, SyncMessage},
+    proto::{data_message::Quote, sync_message::Sent, AttachmentPointer},
 };
-use presage::{Manager, Registered, Thread};
-use presage_store_sled::{MigrationConflictStrategy, SledStore};
+use presage::{manager::Registered, store::Thread, Manager};
+use presage_store_sqlite::SqliteStore;
 use tokio::sync::Mutex;
 
 #[async_trait]
@@ -84,7 +83,7 @@ impl SignalHandle {
             timestamp: Some(timestamp()),
             reaction: Some(Reaction {
                 emoji: Some(String::from(emoji)),
-                target_author_aci: Some(content.metadata.sender.uuid.to_string()),
+                target_author_aci: Some(content.metadata.sender.service_id_string()),
                 target_sent_timestamp: Some(datamessage.timestamp()),
                 ..Default::default()
             }),
@@ -101,7 +100,7 @@ impl SignalHandle {
             body: Some(body.into()),
             timestamp: Some(timestamp()),
             quote: Some(Quote {
-                author_aci: Some(content.metadata.sender.uuid.to_string()),
+                author_aci: Some(content.metadata.sender.service_id_string()),
                 id: Some(content.metadata.timestamp),
                 ..Default::default()
             }),
@@ -118,11 +117,8 @@ impl SignalHandle {
         let data = self
             .manager_request(ManagerRequest::GetAttachment(attachment_pointer.clone()))
             .await?;
-        if let ManagerReply::Attachment(data) = data {
-            Ok(data)
-        } else {
-            Err(anyhow!("get_attachment() invalid reply"))
-        }
+        let ManagerReply::Attachment(data) = data;
+        Ok(data)
     }
 
     pub async fn manager_request(&self, req: ManagerRequest) -> anyhow::Result<ManagerReply> {
@@ -159,12 +155,18 @@ impl SignalConfig {
         })
     }
 
+    async fn open_config_store(&self) -> Result<SqliteStore, anyhow::Error> {
+        SqliteStore::open_with_passphrase(
+            self.db_path.as_str(),
+            None,
+            presage_store_sqlite::OnNewIdentity::Reject,
+        )
+        .await
+        .with_context(|| format!("failed to open sqlite data storage at: {}", self.db_path))
+    }
+
     pub async fn link(&mut self) -> anyhow::Result<()> {
-        let config_store = SledStore::open_with_passphrase(
-            &self.db_path,
-            Some(""),
-            MigrationConflictStrategy::Raise,
-        )?;
+        let config_store = self.open_config_store().await?;
 
         let (provisioning_link_tx, provisioning_link_rx) =
             futures::channel::oneshot::channel::<url::Url>();
@@ -186,7 +188,7 @@ impl SignalConfig {
 
         match manager {
             (Ok(manager), _) => {
-                let uuid = manager.whoami().await.unwrap().uuid;
+                let uuid = manager.whoami().await.unwrap().aci;
                 info!("Linking successful. UUID={uuid:?}");
                 Ok(())
             }
@@ -199,16 +201,11 @@ impl SignalConfig {
         self
     }
 
-    pub fn run(self, replay_timestamp: u64) -> anyhow::Result<Signal> {
-        debug!("opening config database from {}", self.db_path);
-        let config_store = SledStore::open_with_passphrase(
-            &self.db_path,
-            Some(""),
-            MigrationConflictStrategy::Raise,
-        )?;
-
+    pub async fn run(self, replay_timestamp: u64) -> anyhow::Result<Signal> {
         let (in_chan_tx, in_chan_rx) = flume::bounded(1024);
         let (out_chan_tx, out_chan_rx) = flume::bounded(1024);
+
+        let config_store = self.open_config_store().await?;
 
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -244,8 +241,8 @@ impl SignalConfig {
         Ok(signal)
     }
 
-    async fn incoming_signal_task(
-        mut manager: Manager<SledStore, Registered>,
+    async fn incoming_signal_task<T: presage::store::Store>(
+        mut manager: Manager<T, Registered>,
         in_chan_tx: flume::Sender<SignalMsg>,
         replay_timestamp: u64,
     ) -> anyhow::Result<()> {
@@ -266,30 +263,38 @@ impl SignalConfig {
 
             pin_mut!(messages);
 
-            while let Some(content) = messages.next().await {
-                if content.metadata.timestamp < replay_timestamp {
-                    continue;
-                }
+            use presage::model::messages::Received;
 
-                debug!("incoming signal message task: msg received");
-                if in_chan_tx
-                    .send_async(SignalMsg::Received(content))
-                    .await
-                    .is_err()
-                {
-                    debug!("incoming signal message task exiting");
-                    return Ok(());
+            while let Some(content) = messages.next().await {
+                match content {
+                    Received::QueueEmpty => {}
+                    Received::Contacts => {}
+                    Received::Content(content) => {
+                        if content.metadata.timestamp < replay_timestamp {
+                            continue;
+                        }
+
+                        debug!("incoming signal message task: msg received");
+                        if in_chan_tx
+                            .send_async(SignalMsg::Received(*content))
+                            .await
+                            .is_err()
+                        {
+                            debug!("incoming signal message task exiting");
+                            return Ok(());
+                        }
+                    }
                 }
             }
         }
     }
 
-    async fn outgoing_signal_task(
-        mut manager: Manager<SledStore, Registered>,
+    async fn outgoing_signal_task<T: presage::store::Store>(
+        mut manager: Manager<T, Registered>,
         out_chan_rx: flume::Receiver<SignalMsg>,
     ) {
-        async fn handle_manager_request(
-            manager: &mut Manager<SledStore, Registered>,
+        async fn handle_manager_request<T: presage::store::Store>(
+            manager: &mut Manager<T, Registered>,
             req: ManagerRequest,
             tx: flume::Sender<ManagerReply>,
         ) {
@@ -314,7 +319,7 @@ impl SignalConfig {
 
                     if let Err(e) = match thread {
                         Thread::Contact(uuid) => manager
-                            .send_message(uuid, message, timestamp())
+                            .send_message(ServiceId::Aci(uuid.into()), message, timestamp())
                             .await
                             .map_err(|e| e.into()),
                         Thread::Group(master_key_bytes) => {

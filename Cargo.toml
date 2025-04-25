@@ -5,33 +5,36 @@ edition = "2021"
 authors = [ "Kaspar Schleiser <kaspar@schleiser.de>" ]
 
 [dependencies]
-anyhow = "1.0.75"
-async-trait = "0.1.74"
+anyhow = "1.0.98"
+async-trait = "0.1.88"
 bincode = "1.3.3"
-camino = "1.1.6"
-clap = { version = "4.4.8", features = ["cargo", "env"] }
+camino = "1.1.9"
+clap = { version = "4.5.37", features = ["cargo", "env"] }
 console-subscriber = "0.2.0"
 dasp = { version = "0.11.0", features = ["signal", "ring_buffer", "interpolate-sinc", "interpolate"] }
-env_logger = "0.10.1"
-flume = { version = "0.11.0", features = ["async"] }
-futures = "0.3.29"
+env_logger = "0.11.8"
+flume = { version = "0.11.1", features = ["async"] }
+futures = "0.3.31"
 jammdb = "0.11.0"
-log = "0.4.20"
+log = "0.4.27"
 num_cpus = "1.16.0"
-once_cell = "1.18.0"
-presage = { git = "https://github.com/whisperfish/presage" }
-presage-store-sled = { git = "https://github.com/whisperfish/presage" }
-qr2term = "0.3.1"
+once_cell = "1.21.3"
+presage = { git = "https://github.com/whisperfish/presage", rev = "0da7b5774" }
+presage-store-sqlite = { git = "https://github.com/whisperfish/presage", rev = "0da7b5774" }
+qr2term = "0.3.3"
 redlux = { version = "0.7.0", default-features = false }
-serde = { version = "1.0.191", features = ["derive"] }
-serde_json = "1.0.108"
-shellexpand = "3.1.0"
-tokio = { version = "1.34.0", features = ["rt-multi-thread"] }
-url = "2.4.1"
-whisper-rs = { git = "https://github.com/tazz4843/whisper-rs" }
-
-[features]
-opencl = ["whisper-rs/opencl"]
+serde = { version = "1.0.219", features = ["derive"] }
+serde_json = "1.0.140"
+shellexpand = "3.1.1"
+tokio = { version = "1.44.2", features = ["rt-multi-thread"] }
+sqlx = { version = "0.8.2", features = [
+    "sqlite",
+    "runtime-tokio-rustls",
+    "uuid",
+    "chrono",
+] }
+url = "2.5.4"
+whisper-rs = { version = "0.14.2", features = ["tracing_backend"] }
 
 [patch.crates-io]
-"curve25519-dalek" = { git = "https://github.com/signalapp/curve25519-dalek", tag = 'signal-curve25519-4.0.0' }
+"curve25519-dalek" = { git = "https://github.com/signalapp/curve25519-dalek", tag = 'signal-curve25519-4.1.3' }
