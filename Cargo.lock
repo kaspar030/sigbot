@@ -326,7 +326,7 @@ dependencies = [
  "bitflags 2.9.0",
  "cexpr",
  "clang-sys",
- "itertools 0.13.0",
+ "itertools 0.12.1",
  "log",
  "prettyplease",
  "proc-macro2",
@@ -1810,6 +1810,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "itertools"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2b192c782037fadd9cfa75548310488aabdbf3d2da73885b31bd0abd03351285"
+dependencies = [
+ "either",
+]
+
+[[package]]
 name = "itoa"
 version = "1.0.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2577,7 +2586,7 @@ checksum = "94e851c7654eed9e68d7d27164c454961a616cf8c203d500607ef22c737b51bb"
 [[package]]
 name = "presage"
 version = "0.7.0-dev"
-source = "git+https://github.com/whisperfish/presage?rev=0da7b5774#0da7b57746b827bfb310f98a10a29e73d508e742"
+source = "git+https://github.com/kaspar030/presage?rev=fc593478#fc5934780179d96073b3fa3e49ef43c34d35139c"
 dependencies = [
  "base64 0.22.1",
  "bytes",
@@ -2599,7 +2608,7 @@ dependencies = [
 [[package]]
 name = "presage-store-sqlite"
 version = "0.1.0"
-source = "git+https://github.com/whisperfish/presage?rev=0da7b5774#0da7b57746b827bfb310f98a10a29e73d508e742"
+source = "git+https://github.com/kaspar030/presage?rev=fc593478#fc5934780179d96073b3fa3e49ef43c34d35139c"
 dependencies = [
  "async-trait",
  "bytes",
@@ -2668,7 +2677,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "be769465445e8c1474e9c5dac2018218498557af32d9ed057325ec9a41ae81bf"
 dependencies = [
  "heck",
- "itertools 0.13.0",
+ "itertools 0.14.0",
  "log",
  "multimap",
  "once_cell",
@@ -2701,7 +2710,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8a56d757972c98b346a9b766e3f02746cde6dd1cd1d1d563472929fdd74bec4d"
 dependencies = [
  "anyhow",
- "itertools 0.13.0",
+ "itertools 0.14.0",
  "proc-macro2",
  "quote",
  "syn 2.0.100",
@@ -3347,14 +3356,13 @@ dependencies = [
  "presage",
  "presage-store-sqlite",
  "qr2term",
- "redlux",
  "serde",
  "serde_json",
  "shellexpand",
  "sqlx",
  "tokio",
  "url",
- "whisper-rs",
+ "whisper-simple",
 ]
 
 [[package]]
@@ -3372,6 +3380,15 @@ dependencies = [
  "sha2",
  "subtle",
  "thiserror 1.0.69",
+]
+
+[[package]]
+name = "signal-hook-registry"
+version = "1.4.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9203b8055f63a2a00e2f593bb0510367fe707d7ff1e5c872de2f537b339e5410"
+dependencies = [
+ "libc",
 ]
 
 [[package]]
@@ -3858,7 +3875,9 @@ dependencies = [
  "bytes",
  "libc",
  "mio",
+ "parking_lot",
  "pin-project-lite",
+ "signal-hook-registry",
  "socket2",
  "tokio-macros",
  "tracing",
@@ -4375,6 +4394,25 @@ dependencies = [
  "cfg-if",
  "cmake",
  "fs_extra",
+]
+
+[[package]]
+name = "whisper-simple"
+version = "0.1.0"
+source = "git+ssh://git@github.com/kaspar030/whisper-simple#f167764b638689bfc2d16ff534e4c95d67d1425f"
+dependencies = [
+ "anyhow",
+ "dasp",
+ "dirs",
+ "flume",
+ "num_cpus",
+ "once_cell",
+ "redlux",
+ "serde",
+ "thiserror 2.0.12",
+ "tokio",
+ "tracing",
+ "whisper-rs",
 ]
 
 [[package]]

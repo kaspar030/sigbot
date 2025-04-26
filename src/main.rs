@@ -47,7 +47,7 @@ async fn main() -> Result<()> {
 
 async fn run_command(profile: &str) -> anyhow::Result<()> {
     env_logger::Builder::from_env(
-        Env::default().default_filter_or(format!("{}=debug", env!("CARGO_PKG_NAME"))),
+        Env::default().default_filter_or(format!("{}=debug,whisper=debug", env!("CARGO_PKG_NAME"))),
     )
     .init();
 

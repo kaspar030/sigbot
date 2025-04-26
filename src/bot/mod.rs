@@ -11,6 +11,8 @@ use tokio::sync::Mutex;
 use crate::quick_hash::QuickHash;
 use crate::signal::{SignalHandle, SignalMsgHandler};
 
+use whisper_simple::{transcribe, WhisperAudio, WhisperModel};
+
 trait ThreadConfig {
     fn get(&self) -> anyhow::Result<BotThreadState>;
     fn put(&self, config: BotThreadState) -> anyhow::Result<()>;
@@ -78,29 +80,25 @@ enum AudioType {
 #[derive(Default, Copy, Clone, Debug, Hash, PartialEq, Serialize, Deserialize)]
 struct BotThreadState {
     enabled: bool,
-    //    whisper_model: WhisperModel,
+    whisper_model: WhisperModel,
 }
 
-struct BotState {
-    whisper_sema: tokio::sync::Semaphore,
-}
+struct BotState {}
 
 impl BotState {
     pub fn new() -> Self {
-        Self {
-            whisper_sema: tokio::sync::Semaphore::new(1),
-        }
+        Self {}
     }
 }
 
 pub struct Bot {
-    state: Arc<Mutex<BotState>>,
+    //state: Arc<Mutex<BotState>>,
 }
 
 impl Bot {
     pub fn new() -> Self {
         Bot {
-            state: Arc::new(Mutex::new(BotState::new())),
+            //state: Arc::new(Mutex::new(BotState::new())),
         }
     }
 
@@ -111,7 +109,6 @@ impl Bot {
         _content: &Content,
         attachment_pointer: &AttachmentPointer,
     ) -> anyhow::Result<String> {
-        //use redlux::Decoder;
         let Ok(attachment_data) = signal.get_attachment(attachment_pointer).await else {
             return Err(anyhow!("failed to fetch attachment"));
         };
@@ -121,7 +118,7 @@ impl Bot {
             attachment_data.len()
         );
 
-        //let model = thread_state.whisper_model;
+        let model = thread_state.whisper_model;
 
         let audio_type = {
             if let Some(file_name) = &attachment_pointer.file_name {
@@ -135,47 +132,13 @@ impl Bot {
             }
         };
 
-        // let (tx, rx) = flume::unbounded();
+        let audio_data = tokio::task::spawn_blocking(move || match audio_type {
+            AudioType::AAC => WhisperAudio::from_aac(&attachment_data),
+            AudioType::M4A => WhisperAudio::from_m4a(&attachment_data),
+        })
+        .await??;
 
-        // std::thread::spawn(move || {
-        //     let file_size = attachment_data.len() as u64;
-        //     let decoder = {
-        //         match audio_type {
-        //             AudioType::AAC => Decoder::new_aac(std::io::Cursor::new(attachment_data)),
-        //             AudioType::M4A => {
-        //                 let dec =
-        //                     Decoder::new_mpeg4(std::io::Cursor::new(attachment_data), file_size);
-        //                 match dec {
-        //                     Err(_) => {
-        //                         tx.send(Ok("[invalid file]".to_string())).unwrap();
-        //                         return;
-        //                     }
-        //                     Ok(dec) => dec,
-        //                 }
-        //             }
-        //         }
-        //     };
-
-        //     //        let decoded: Vec<f32> = decoder.map(|sample| sample as f32 / 32768.0).collect();
-        //     let decoded: Vec<i16> = decoder.collect();
-
-        //     // use whisper_rs::*;
-
-        //     // let decoded = resample::resample(&decoded[..], 16000);
-        //     // let audio_len = std::time::Duration::from_millis((decoded.len() / 16) as u64);
-        //     // debug!("audio length: {:.2?}", audio_len);
-
-        //     // let num_segments = state.full_n_segments().expect("getting segments");
-        //     // if num_segments == 0 {
-        //     //     debug!("no voice found");
-        //     //     tx.send(Ok("[no voice found]".to_string())).unwrap();
-        //     // } else {
-        //     //     tx.send(Ok(transcription)).unwrap();
-        //     // }
-        // });
-
-        Ok("[no voice ...]".to_string())
-        //rx.recv_async().await.unwrap()
+        transcribe(model, audio_data, None).await
     }
 
     async fn handle_attachments(
